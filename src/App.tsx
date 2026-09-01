@@ -97,7 +97,7 @@ function App() {
   const [engineReady, setEngineReady] = useState(false)
   const [mode, setMode] = useState<'analysis' | 'autoplay'>('analysis')
   const [engineChoice, setEngineChoice] = useState<EngineKind>('stockfish')
-  const [autoplay, setAutoplay] = useState({ running: false, white: 'stockfish' as EngineKind, black: 'ours' as EngineKind, result: '', plies: 0 })
+  const [autoplay, setAutoplay] = useState({ running: false, loading: false, white: 'stockfish' as EngineKind, black: 'ours' as EngineKind, result: '', plies: 0 })
   const fileRef = useRef<HTMLInputElement>(null)
   const engineRef = useRef<Worker | null>(null)
   const currentFenRef = useRef('')
@@ -191,16 +191,17 @@ function App() {
     autoplayStopRef.current = false
     const fresh = new Chess()
     setGame(fresh); setHistory([]); setViewIndex(0); setStatus('Engine vs engine in progress')
-    setAutoplay((a) => ({ ...a, running: true, result: '', plies: 0 }))
+    setAutoplay((a) => ({ ...a, running: true, loading: true, result: '', plies: 0 }))
     const [white, black] = await Promise.all([spawnReadyEngine(autoplay.white), spawnReadyEngine(autoplay.black)])
     if (autoplayStopRef.current) { white.terminate(); black.terminate(); return }
     autoplayWorkersRef.current = { white, black }
+    setAutoplay((a) => ({ ...a, loading: false }))
     runAutoplayLoop(white, black, fresh)
   }
 
   function stopAutoplay() {
     autoplayStopRef.current = true
-    setAutoplay((a) => ({ ...a, running: false }))
+    setAutoplay((a) => ({ ...a, running: false, loading: false }))
   }
 
   function resetAutoplay() {
@@ -209,7 +210,7 @@ function App() {
     workers.white?.terminate(); workers.black?.terminate()
     autoplayWorkersRef.current = {}
     setGame(new Chess()); setHistory([]); setViewIndex(0); setStatus('Ready for a game')
-    setAutoplay((a) => ({ ...a, running: false, result: '', plies: 0 }))
+    setAutoplay((a) => ({ ...a, running: false, loading: false, result: '', plies: 0 }))
   }
 
   function loadPgn(text: string) {
@@ -284,7 +285,7 @@ function App() {
             </>
           ) : (
             <>
-              <div className="panel-heading"><div><span className="label">ENGINE VS ENGINE</span><h1>{autoplay.result || (autoplay.running ? 'Playing...' : 'Ready')}</h1></div></div>
+              <div className="panel-heading"><div><span className="label">ENGINE VS ENGINE</span><h1>{autoplay.result || (autoplay.loading ? 'Loading engines...' : autoplay.running ? 'Playing...' : 'Ready')}</h1>{autoplay.loading && <p className="empty">Downloading {engineNames[autoplay.white]} and {engineNames[autoplay.black]}... first load can take a couple of minutes.</p>}</div></div>
               <div className="autoplay-sides">
                 <div className="autoplay-side"><span className="label">WHITE</span><div className="engine-picker-buttons"><button disabled={autoplay.running} className={autoplay.white === 'stockfish' ? 'active-move' : ''} onClick={() => setAutoplay((a) => ({ ...a, white: 'stockfish' }))}>Stockfish 18</button><button disabled={autoplay.running} className={autoplay.white === 'ours' ? 'active-move' : ''} onClick={() => setAutoplay((a) => ({ ...a, white: 'ours' }))}>Overboard</button></div></div>
                 <div className="autoplay-side"><span className="label">BLACK</span><div className="engine-picker-buttons"><button disabled={autoplay.running} className={autoplay.black === 'stockfish' ? 'active-move' : ''} onClick={() => setAutoplay((a) => ({ ...a, black: 'stockfish' }))}>Stockfish 18</button><button disabled={autoplay.running} className={autoplay.black === 'ours' ? 'active-move' : ''} onClick={() => setAutoplay((a) => ({ ...a, black: 'ours' }))}>Overboard</button></div></div>

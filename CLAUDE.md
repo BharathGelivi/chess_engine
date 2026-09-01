@@ -56,8 +56,21 @@ through it, and get live Stockfish suggestions at any position. Vite + React
   (hand-written module-Worker glue, loaded as `new Worker('/engine/worker.js',
   { type: 'module' })`; imports the wasm-pack output from `./pkg/` and
   forwards UCI-lite lines exactly like the Stockfish Worker does) plus
-  `pkg/` (wasm-pack's generated output — `.wasm` + JS glue — not checked
-  in by hand, produced by the build command above).
+  `pkg/` (wasm-pack's generated output — `.wasm` + JS glue, produced by
+  the build command above). Unlike a typical build artifact, `pkg/` **is**
+  committed: Vercel's build has no Rust/cargo toolchain, so if it's not in
+  git it's simply absent from the deployment (this bit the project once —
+  it was gitignored, including wasm-pack's own nested `pkg/.gitignore`,
+  and "Overboard Engine" 404'd in prod). Re-run the wasm-pack build and
+  commit the changed files under `pkg/` whenever `engine/` changes.
+- [vercel.json](vercel.json) — sets `Cache-Control: public, max-age=31536000,
+  immutable` on `/stockfish/*` and `/engine/*`. Vercel's default for
+  `public/` static files is `max-age=0, must-revalidate`, which forces a
+  network round-trip on every load even when the ~110MB Stockfish binary
+  hasn't changed — the immutable header lets the browser skip that entirely
+  after the first load. Trade-off: if either binary is ever updated, the
+  filename must change too (cache-busting), since browsers holding the old
+  immutable response will never revalidate it.
 
 ## How the app works (src/App.tsx)
 - **Chess state**: `chess.js` `Chess` instance. `game` = the live/imported
