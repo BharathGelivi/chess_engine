@@ -90,6 +90,11 @@ function App() {
   const [pgnText, setPgnText] = useState('')
   const [status, setStatus] = useState('Ready for a game')
   const [engineState, setEngineState] = useState({ depth: 0, time: 0, evaluation: '0.00', lines: [] as Array<{ move: string; san: string; score: string; label: string }> })
+  // Stockfish's WASM binary is ~110MB — a cold load can take a minute or
+  // more before the worker responds at all, during which the UI would
+  // otherwise look identically "calculating" whether it's thinking or just
+  // still downloading. Tracked separately so we can tell the user which.
+  const [engineReady, setEngineReady] = useState(false)
   const [mode, setMode] = useState<'analysis' | 'autoplay'>('analysis')
   const [engineChoice, setEngineChoice] = useState<EngineKind>('stockfish')
   const [autoplay, setAutoplay] = useState({ running: false, white: 'stockfish' as EngineKind, black: 'ours' as EngineKind, result: '', plies: 0 })
@@ -109,6 +114,7 @@ function App() {
   const suggestions = engineState.lines
 
   useEffect(() => {
+    setEngineReady(false)
     const engine = makeEngineWorker(engineChoice)
     engineRef.current = engine
     engine.postMessage('uci')
@@ -116,6 +122,7 @@ function App() {
     engine.postMessage('isready')
     engine.onmessage = (event) => {
       const line = typeof event.data === 'string' ? event.data : ''
+      if (line === 'readyok') setEngineReady(true)
       const depth = line.match(/\bdepth (\d+)/)?.[1]
       const time = line.match(/\btime (\d+)/)?.[1]
       const score = line.match(/score (cp|mate) (-?\d+)/)
@@ -270,7 +277,7 @@ function App() {
               <div className="engine-picker"><span className="label">ENGINE</span><div className="engine-picker-buttons"><button className={engineChoice === 'stockfish' ? 'active-move' : ''} onClick={() => setEngineChoice('stockfish')}>Stockfish 18</button><button className={engineChoice === 'ours' ? 'active-move' : ''} onClick={() => setEngineChoice('ours')}>Overboard Engine</button></div></div>
               <div className="engine-status"><Zap size={15} /> {engineNames[engineChoice]} · depth {engineState.depth || '...'} <span>{(engineState.time / 1000).toFixed(1)}s</span></div>
               <div className="section-title"><span>TOP LINES</span><span className="tiny-badge">{engineChoice === 'stockfish' ? '3 suggestions' : '1 suggestion'}</span></div>
-              <div className="lines">{suggestions.length ? suggestions.map((item) => <button className="line" key={item.move} onClick={() => makeMove(item.move.slice(0, 2), item.move.slice(3))}><span className="line-rank">{item.label}</span><strong>{item.san}</strong><span>{item.score}</span></button>) : <p className="empty">{engineNames[engineChoice]} is calculating...</p>}</div>
+              <div className="lines">{suggestions.length ? suggestions.map((item) => <button className="line" key={item.move} onClick={() => makeMove(item.move.slice(0, 2), item.move.slice(3))}><span className="line-rank">{item.label}</span><strong>{item.san}</strong><span>{item.score}</span></button>) : <p className="empty">{engineReady ? `${engineNames[engineChoice]} is calculating...` : `Downloading ${engineNames[engineChoice]}... this can take a minute on first load.`}</p>}</div>
               <div className="section-title"><span>GAME MOVES</span><span className="muted">{history.length} ply</span></div>
               <div className="move-list">{history.length ? history.map((move, index) => <button key={`${move.san}-${index}`} className={index === viewIndex - 1 ? 'active-move' : ''} onClick={() => setViewIndex(index + 1)}><small>{index % 2 === 0 ? `${Math.floor(index / 2) + 1}.` : ''}</small>{move.san}</button>) : <p className="empty">Import a Chess.com PGN to review your game.</p>}</div>
               <div className="panel-footer"><button className="ghost" onClick={() => loadPgn(demoPgn)}><Download size={15} /> Load sample game</button><span><Gauge size={15} /> Full WASM engine</span></div>
