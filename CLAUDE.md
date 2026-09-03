@@ -113,9 +113,14 @@ through it, and get live Stockfish suggestions at any position. Vite + React
   `engine/`). The Worker-creation `useEffect` now depends on
   `engineChoice` and recreates the Worker on switch; the existing
   `info`-line regex parser is unchanged since both engines emit the same
-  line shape. Our engine only emits one PV line (no MultiPV), and runs at
-  a shallower live-analysis depth (`analysisDepth` map in App.tsx) since
-  its copy-make search is far slower than Stockfish's tuned C++.
+  line shape. Our engine only emits one PV line (no MultiPV). Live
+  analysis sends Stockfish a fixed `go depth 18` but our engine a time
+  budget (`go movetime 3000`, `analysisBudget` map in App.tsx) — depth is
+  a bad knob for our slower copy-make search since a fixed depth was
+  either too shallow (weak tactics) or too slow depending on position;
+  movetime lets iterative deepening go as deep as the budget allows, and
+  the `stop` sent on every position change cancels a stale search instead
+  of queuing one up.
 - **Engine vs engine autoplay**: `mode` state (`'analysis' | 'autoplay'`)
   toggles between the existing single-engine analysis panel and a second
   panel. Autoplay spawns two independent engine Workers (`spawnReadyEngine`,

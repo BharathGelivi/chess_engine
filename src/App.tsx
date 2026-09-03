@@ -18,11 +18,13 @@ const demoPgn = `[Event "Rapid review"]\n[White "You"]\n[Black "Training partner
 type EngineKind = 'stockfish' | 'ours'
 const engineNames: Record<EngineKind, string> = { stockfish: 'Stockfish 18', ours: 'Overboard Engine' }
 // Our engine's copy-make search is far slower (nodes/sec) than Stockfish's
-// hand-tuned C++, so it gets a shallower live-analysis depth to stay
-// responsive — depth 10 measured ~7s/search (engine/BENCHMARKS in the
-// cargo run --release output), which would queue up a worker backlog
-// during fast position changes (e.g. autoplay); depth 7 stays sub-second.
-const analysisDepth: Record<EngineKind, number> = { stockfish: 18, ours: 7 }
+// hand-tuned C++. Stockfish gets a fixed depth (it reaches 18 in well under
+// a second). Ours gets a time budget instead of a depth cap — fixed depth 7
+// was leaving real playing strength on the table (shallow enough to miss
+// tactics bots above ~1200 punish); movetime lets iterative deepening go as
+// far as the budget allows, and the `stop` sent on every position change
+// (below) cancels a stale search rather than letting it queue up.
+const analysisBudget: Record<EngineKind, string> = { stockfish: 'depth 18', ours: 'movetime 3000' }
 // Fixed per-move search budget for engine-vs-engine autoplay — movetime (not
 // depth) keeps a full game to a playable pace regardless of which engine or
 // position complexity is in play.
@@ -151,7 +153,7 @@ function App() {
     setEngineState((current) => ({ ...current, depth: 0, time: 0, lines: [] }))
     engine.postMessage('stop')
     engine.postMessage(`position fen ${viewGame.fen()}`)
-    engine.postMessage(`go depth ${analysisDepth[engineChoice]}`)
+    engine.postMessage(`go ${analysisBudget[engineChoice]}`)
   }, [viewGame, engineChoice])
 
   // Engine-vs-engine autoplay: drives two independent engine Workers in
