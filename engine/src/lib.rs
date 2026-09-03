@@ -4,7 +4,7 @@
 // ponytail: `send_command` runs the whole command synchronously and returns
 // all output lines newline-joined, rather than streaming `info` lines out
 // via postMessage as they're produced (which would need web-sys's
-// DedicatedWorkerGlobalScope bindings). The public/engine/worker.js glue
+// DedicatedWorkerGlobalScope bindings). The public/engine-v2/worker.js glue
 // splits the return value on '\n' and posts each line, so App.tsx's
 // existing per-line parser still works — the only user-visible difference
 // from Stockfish is that intermediate `info depth N` lines for a slow `go`
@@ -26,7 +26,7 @@ use wasm_bindgen::prelude::*;
 // Exposes `initThreadPool(concurrency)` in the generated JS glue — the
 // Lazy-SMP search (search.rs) needs this called and awaited once, before
 // any `sendCommand`, so rayon has Web Workers backed by SharedArrayBuffer
-// to schedule onto (see public/engine/worker.js). No-op on native builds.
+// to schedule onto (see public/engine-v2/worker.js). No-op on native builds.
 #[cfg(target_arch = "wasm32")]
 pub use wasm_bindgen_rayon::init_thread_pool;
 

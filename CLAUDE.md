@@ -20,10 +20,17 @@ through it, and get live Stockfish suggestions at any position. Vite + React
 - [src/index.css](src/index.css), [src/main.tsx](src/main.tsx) — Vite
   boilerplate entry point, rarely relevant.
 - [public/stockfish/](public/stockfish/) — Stockfish 18, single-threaded WASM
-  build (`stockfish-18-single.js` + `.wasm`), loaded as a Web Worker at
-  `/stockfish/stockfish-18-single.js`. This is the only engine dependency;
-  the `stockfish` npm package in package.json is unused at runtime (the
-  worker file is fetched directly from `public/`, not imported).
+  build (`stockfish-18-single-v2.js` + `.wasm`, the `.wasm` tracked via Git
+  LFS per `.gitattributes`), loaded as a Web Worker at
+  `/stockfish/stockfish-18-single-v2.js`. This is the only engine
+  dependency; the `stockfish` npm package in package.json is unused at
+  runtime (the worker file is fetched directly from `public/`, not
+  imported). The `-v2` suffix is cache-busting, not a Stockfish version
+  bump — see the versioned-path note under `public/engine-v2/` below,
+  same reasoning applies here. The `.js` glue derives its `.wasm` filename
+  from its own URL (`location.pathname.replace(/\.js$/i, ".wasm")`), so
+  the two filenames must always match — renaming one without the other
+  breaks WASM loading.
 - [docs/BEATING_STOCKFISH.md](docs/BEATING_STOCKFISH.md) — reference doc on
   Stockfish internals (search/NNUE) and realistic paths to build something
   stronger. Not app code — read only if asked about engine internals.
@@ -91,7 +98,7 @@ through it, and get live Stockfish suggestions at any position. Vite + React
   contention makes more threads a net loss well before using a big
   machine's full core count), `lib.rs` (wasm-bindgen `WasmEngine` export,
   plus `pub use wasm_bindgen_rayon::init_thread_pool` on wasm32 — exposes
-  `initThreadPool(n)` in the generated JS glue, see `public/engine/
+  `initThreadPool(n)` in the generated JS glue, see `public/engine-v2/
   worker.js`), `main.rs` (native `[[bin]]`, not built to WASM — fast
   iteration target; also gets Lazy-SMP for free via the same `Engine`,
   same 4-thread cap from `handle_go`).
@@ -103,33 +110,51 @@ through it, and get live Stockfish suggestions at any position. Vite + React
   `engine/` (not a bare `wasm-pack build` — see below).
 - [engine/build-wasm.sh](engine/build-wasm.sh) — wraps the WASM build
   (nightly + `-Z build-std`, needed because stable's prebuilt std has no
-  atomics) and two post-build fixups wasm-pack redoes from scratch every
-  run, both bitten this project already: (1) deletes the nested
-  `pkg/.gitignore` wasm-pack regenerates (just `*` — silently excludes the
-  whole engine from git, which is what 404'd "Overboard Engine" in prod
-  once already); (2) patches wasm-bindgen-rayon's generated
-  `workerHelpers.js`, which does a bundler-style directory import
-  (`import('../../..')`) to reach `engine.js` — resolves fine under a
-  bundler's package resolution, but this app loads `pkg/` as raw static
-  files with no bundler in the loop, so that import 404s in a real
-  browser; patched to the explicit `../../../engine.js` path. Always use
-  this script, never call `wasm-pack build` directly, or both gotchas come
-  back on the next build.
-- [public/engine/](public/engine/) — WASM engine deployment: `worker.js`
-  (hand-written module-Worker glue, loaded as `new Worker('/engine/worker.js',
-  { type: 'module' })`; imports the wasm-pack output from `./pkg/` and
-  forwards UCI-lite lines exactly like the Stockfish Worker does; also
-  calls and awaits `initThreadPool(...)`, capped at 4, before constructing
-  `WasmEngine` — this is what actually spins up the Lazy-SMP search's
-  helper-thread Web Workers) plus `pkg/` (wasm-pack's generated output —
-  `.wasm` + JS glue, produced by `build-wasm.sh`). Unlike a typical build
-  artifact, `pkg/` **is** committed: Vercel's build has no Rust/cargo
-  toolchain, so if it's not in git it's simply absent from the deployment
-  (this bit the project once — see `build-wasm.sh` above). Re-run
-  `build-wasm.sh` and commit the changed files under `pkg/` whenever
-  `engine/` changes.
+  atomics) and post-build fixups wasm-pack redoes from scratch every run,
+  all bitten this project already: (1) deletes the nested `pkg/.gitignore`
+  wasm-pack regenerates (just `*` — silently excludes the whole engine
+  from git, which is what 404'd "Overboard Engine" in prod once already);
+  (2) patches wasm-bindgen-rayon's generated `workerHelpers.js`, which
+  does a bundler-style directory import (`import('../../..')`) to reach
+  `engine.js` — resolves fine under a bundler's package resolution, but
+  this app loads `pkg/` as raw static files with no bundler in the loop,
+  so that import 404s in a real browser; patched to the explicit
+  `../../../engine.js` path. Always use this script, never call
+  `wasm-pack build` directly, or these gotchas come back on the next
+  build. (The output directory is versioned — `engine-v2/pkg`, not
+  `engine/pkg` — for a fourth, separate reason: see the note below.)
+- [public/engine-v2/](public/engine-v2/) — WASM engine deployment:
+  `worker.js` (hand-written module-Worker glue, loaded as `new
+  Worker('/engine-v2/worker.js', { type: 'module' })`; imports the
+  wasm-pack output from `./pkg/` and forwards UCI-lite lines exactly like
+  the Stockfish Worker does; also calls and awaits `initThreadPool(...)`,
+  capped at 4, before constructing `WasmEngine` — this is what actually
+  spins up the Lazy-SMP search's helper-thread Web Workers) plus `pkg/`
+  (wasm-pack's generated output — `.wasm` + JS glue, produced by
+  `build-wasm.sh`). Unlike a typical build artifact, `pkg/` **is**
+  committed: Vercel's build has no Rust/cargo toolchain, so if it's not in
+  git it's simply absent from the deployment (this bit the project once —
+  see `build-wasm.sh` above). Re-run `build-wasm.sh` and commit the
+  changed files under `pkg/` whenever `engine/` changes.
+  **The `-v2` in this directory's name (and in `stockfish-18-single-v2.js`/
+  `.wasm`) is cache-busting, unrelated to either engine's actual version.**
+  Both paths are served with a 1-year `immutable` Cache-Control
+  (`vercel.json`) — great for repeat-visit load time, but it means a
+  browser that already fetched a path keeps whatever it first got,
+  headers included, for a year, and a plain page refresh does not
+  reliably bust a cached Worker's own sub-resource fetches (confirmed by
+  a real incident: adding the COOP/COEP headers below without bumping
+  either path broke both engines for anyone who'd visited before, with no
+  user-side fix short of clearing site data). **Whenever anything about
+  what's served at these paths changes — file content, *or* response
+  headers set by `vercel.json` that apply to them — bump the version
+  suffix and update every reference**: `App.tsx`'s `makeEngineWorker`,
+  `build-wasm.sh`'s `--out-dir`, and the matching `vercel.json` header
+  block (`engine/build-wasm.sh` reminds you inline; `stockfish-18-single-v2`
+  has no such reminder since that file is never rebuilt by tooling — bump
+  it by hand if Stockfish itself is ever upgraded).
 - [vercel.json](vercel.json) — sets `Cache-Control: public, max-age=31536000,
-  immutable` on `/stockfish/*` and `/engine/*`. Vercel's default for
+  immutable` on `/stockfish/*` and `/engine-v2/*`. Vercel's default for
   `public/` static files is `max-age=0, must-revalidate`, which forces a
   network round-trip on every load even when the ~110MB Stockfish binary
   hasn't changed — the immutable header lets the browser skip that entirely
@@ -182,8 +207,8 @@ through it, and get live Stockfish suggestions at any position. Vite + React
   intentional for this single-file scope, not an oversight.
 - **Engine picker (analysis mode)**: `engineChoice` state (`'stockfish' |
   'ours'`, **defaults to `'ours'`**) selects which Worker script the single
-  analysis Worker loads — `/stockfish/stockfish-18-single.js` (classic
-  Worker, ~108MB WASM) or `/engine/worker.js` (module Worker, wraps the
+  analysis Worker loads — `/stockfish/stockfish-18-single-v2.js` (classic
+  Worker, ~108MB WASM) or `/engine-v2/worker.js` (module Worker, wraps the
   WASM engine in `engine/`, ~170KB). Defaulting to Stockfish used to mean
   every first visit ate a ~108MB eager download before showing any
   analysis; defaulting to ours (600x smaller, and by now has the opening

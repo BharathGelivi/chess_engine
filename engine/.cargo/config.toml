@@ -6,7 +6,7 @@
 # Still requires building with nightly + `-Z build-std=panic_abort,std`
 # (stable's prebuilt std isn't compiled with atomics support), e.g.:
 #   RUSTUP_TOOLCHAIN=nightly wasm-pack build . --target web \
-#     --out-dir ../public/engine/pkg -- -Z build-std=panic_abort,std
+#     --out-dir ../public/engine-v2/pkg -- -Z build-std=panic_abort,std
 [target.wasm32-unknown-unknown]
 rustflags = [
   "-C", "target-feature=+atomics,+bulk-memory,+mutable-globals",

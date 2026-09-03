@@ -38,11 +38,11 @@ Chess.com PGN can be exported from a game through **Share > PGN**. Boardroom doe
 The app uses the full single-threaded Stockfish 18 WASM build:
 
 ```text
-public/stockfish/stockfish-18-single.js
-public/stockfish/stockfish-18-single.wasm
+public/stockfish/stockfish-18-single-v2.js
+public/stockfish/stockfish-18-single-v2.wasm
 ```
 
-The WASM binary is about 113 MB. The first analysis may take a moment; the browser caches it afterward. Stockfish runs in a Web Worker so it does not block the UI. The current search limit is depth 18; change `go depth 18` in `src/App.tsx` to tune response time and strength.
+The WASM binary is about 108 MB. It is not loaded by default — the app starts with the small (~170KB) from-scratch "Overboard Engine" and only fetches Stockfish if you switch to it in the engine picker. Once fetched, the browser caches it for later visits. Stockfish runs in a Web Worker so it does not block the UI. The current search limit is depth 18; change `go depth 18` in `src/App.tsx` to tune response time and strength.
 
 The single-threaded build avoids requiring cross-origin isolation headers. A multi-threaded build can be used later with COOP/COEP-enabled hosting.
 

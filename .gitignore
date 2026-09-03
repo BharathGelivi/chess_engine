@@ -12,9 +12,9 @@ dist
 dist-ssr
 *.local
 
-# Rust engine build output (cargo). public/engine/pkg (wasm-pack's output)
-# IS checked in deliberately: Vercel's build has no Rust toolchain, so this
-# small (~85KB) compiled artifact must be committed to deploy at all.
+# Rust engine build output (cargo). public/engine-v2/pkg (wasm-pack's
+# output) IS checked in deliberately: Vercel's build has no Rust toolchain,
+# so this small compiled artifact must be committed to deploy at all.
 engine/target
 
 # Editor directories and files

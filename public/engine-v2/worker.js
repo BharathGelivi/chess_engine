@@ -1,5 +1,5 @@
 // Module Worker glue for the from-scratch Rust/WASM engine. Loaded as
-// `new Worker('/engine/worker.js', { type: 'module' })` — App.tsx talks to
+// `new Worker('/engine-v2/worker.js', { type: 'module' })` — App.tsx talks to
 // it exactly like the Stockfish worker: postMessage(string) in, one or more
 // string `info`/`bestmove` lines out via postMessage.
 //

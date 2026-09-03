@@ -38,10 +38,17 @@ const analysisBudget: Record<EngineKind, string> = { stockfish: 'depth 18', ours
 const AUTOPLAY_MOVETIME_MS = 500
 const AUTOPLAY_MAX_PLIES = 200
 
+// Versioned filenames (not just the plain names) — these are cached
+// `immutable` for a year (see vercel.json), so any future change to either
+// the binaries themselves *or* the response headers they're served with
+// (e.g. the COOP/COEP rollout that first necessitated this "-v2") needs a
+// new version suffix here, or browsers that already cached the old
+// path/headers combination never see the update — a plain page refresh
+// does not reliably bust a cached Worker's own sub-resource fetches.
 function makeEngineWorker(kind: EngineKind): Worker {
   return kind === 'stockfish'
-    ? new Worker('/stockfish/stockfish-18-single.js')
-    : new Worker('/engine/worker.js', { type: 'module' })
+    ? new Worker('/stockfish/stockfish-18-single-v2.js')
+    : new Worker('/engine-v2/worker.js', { type: 'module' })
 }
 
 /** Spawns a worker and resolves once it answers `isready` with `readyok`. */
