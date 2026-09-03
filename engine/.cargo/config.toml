@@ -1,0 +1,20 @@
+# wasm32-only: needed for the Lazy-SMP search's thread pool (rayon +
+# wasm-bindgen-rayon) to get real shared WebAssembly memory. Scoped to this
+# one target triple only, so native `cargo build`/`cargo test` (host target)
+# are unaffected — no nightly, no atomics, no build-std needed there.
+#
+# Still requires building with nightly + `-Z build-std=panic_abort,std`
+# (stable's prebuilt std isn't compiled with atomics support), e.g.:
+#   RUSTUP_TOOLCHAIN=nightly wasm-pack build . --target web \
+#     --out-dir ../public/engine/pkg -- -Z build-std=panic_abort,std
+[target.wasm32-unknown-unknown]
+rustflags = [
+  "-C", "target-feature=+atomics,+bulk-memory,+mutable-globals",
+  "-C", "link-arg=--shared-memory",
+  "-C", "link-arg=--import-memory",
+  "-C", "link-arg=--max-memory=1073741824",
+  "-C", "link-arg=--export=__wasm_init_tls",
+  "-C", "link-arg=--export=__tls_size",
+  "-C", "link-arg=--export=__tls_align",
+  "-C", "link-arg=--export=__tls_base",
+]

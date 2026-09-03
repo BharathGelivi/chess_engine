@@ -8,6 +8,8 @@
 use crate::board::{Move, Position, KING, PAWN};
 use crate::eval::{evaluate, MATE_SCORE};
 use crate::movegen::{gen_legal, in_check, make_move};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 pub const MAX_PLY: usize = 64;
 
@@ -62,12 +64,20 @@ struct TTEntry {
 }
 
 pub struct Search {
-    tt: Vec<Option<TTEntry>>,
+    // Shared across every helper-thread Search for a Lazy-SMP search: all
+    // threads probe/store into the same table (behind a per-slot mutex, so
+    // one thread's work speeds up the others via transposition hits) —
+    // killers/history stay per-thread since they're move-ordering heuristics
+    // tied to that thread's own search path, not shared position data.
+    tt: Arc<Vec<Mutex<Option<TTEntry>>>>,
     tt_mask: usize,
     killers: Vec<[Option<Move>; 2]>,
     history: [[[i32; 64]; 64]; 2],
     pub nodes: u64,
     stop: bool,
+    // Fresh per `go` call, shared with that call's helper threads: lets any
+    // thread hitting the deadline signal the others to stop promptly.
+    time_up: Arc<AtomicBool>,
     deadline_ms: Option<f64>,
     start_ms: f64,
     opts: SearchOptions,
@@ -92,15 +102,35 @@ impl Search {
     pub fn new(opts: SearchOptions) -> Self {
         let tt_size = 1 << 20; // ~1M entries, power of two for masking
         Search {
-            tt: vec![None; tt_size],
+            tt: Arc::new((0..tt_size).map(|_| Mutex::new(None)).collect()),
             tt_mask: tt_size - 1,
             killers: vec![[None, None]; MAX_PLY + 1],
             history: [[[0; 64]; 64]; 2],
             nodes: 0,
             stop: false,
+            time_up: Arc::new(AtomicBool::new(false)),
             deadline_ms: None,
             start_ms: 0.0,
             opts,
+            last_pv: Vec::new(),
+        }
+    }
+
+    /// A helper-thread Search for Lazy-SMP: shares this instance's
+    /// transposition table and time-up flag, but gets its own killers/
+    /// history and starts from a clean node count.
+    fn spawn_helper(&self) -> Search {
+        Search {
+            tt: self.tt.clone(),
+            tt_mask: self.tt_mask,
+            killers: vec![[None, None]; MAX_PLY + 1],
+            history: [[[0; 64]; 64]; 2],
+            nodes: 0,
+            stop: false,
+            time_up: self.time_up.clone(),
+            deadline_ms: self.deadline_ms,
+            start_ms: self.start_ms,
+            opts: self.opts,
             last_pv: Vec::new(),
         }
     }
@@ -109,26 +139,32 @@ impl Search {
 
     fn tt_probe(&self, hash: u64) -> Option<TTEntry> {
         if !self.opts.use_tt { return None; }
-        let e = self.tt[(hash as usize) & self.tt_mask];
-        e.filter(|e| e.hash == hash)
+        let idx = (hash as usize) & self.tt_mask;
+        let guard = self.tt[idx].lock().unwrap();
+        guard.filter(|e| e.hash == hash)
     }
 
-    fn tt_store(&mut self, hash: u64, depth: i8, score: i32, flag: u8, best: Option<Move>) {
+    fn tt_store(&self, hash: u64, depth: i8, score: i32, flag: u8, best: Option<Move>) {
         if !self.opts.use_tt { return; }
         let idx = (hash as usize) & self.tt_mask;
-        let replace = match &self.tt[idx] {
+        let mut guard = self.tt[idx].lock().unwrap();
+        let replace = match &*guard {
             None => true,
             Some(old) => old.depth <= depth || old.hash == hash,
         };
         if replace {
-            self.tt[idx] = Some(TTEntry { hash, depth, score, flag, best });
+            *guard = Some(TTEntry { hash, depth, score, flag, best });
         }
     }
 
     fn check_time(&mut self) {
         if self.nodes % 4096 != 0 { return; }
+        if self.time_up.load(Ordering::Relaxed) { self.stop = true; return; }
         if let Some(dl) = self.deadline_ms {
-            if now_ms() >= dl { self.stop = true; }
+            if now_ms() >= dl {
+                self.stop = true;
+                self.time_up.store(true, Ordering::Relaxed);
+            }
         }
     }
 
@@ -368,4 +404,31 @@ impl Search {
     }
 
     pub fn stop_now(&mut self) { self.stop = true; }
+
+    /// Lazy-SMP: run `num_threads` searches of the same position in
+    /// parallel, all reading/writing the shared transposition table, so
+    /// each thread's discoveries speed up the others via TT hits on
+    /// transposed paths. Only this (the calling) thread's result is
+    /// reported — the helper threads exist purely to seed the shared TT,
+    /// same as every other production Lazy-SMP implementation.
+    pub fn iterative_deepening_mt(&mut self, pos: &Position, limits: &SearchLimits, num_threads: usize, on_depth: impl FnMut(&DepthInfo) + Send) -> Option<Move> {
+        if num_threads <= 1 {
+            return self.iterative_deepening(pos, limits, on_depth);
+        }
+        self.start_ms = now_ms();
+        self.deadline_ms = limits.movetime_ms.map(|ms| self.start_ms + ms as f64);
+        self.time_up = Arc::new(AtomicBool::new(false));
+
+        let mut helpers: Vec<Search> = (1..num_threads).map(|_| self.spawn_helper()).collect();
+        let mut best_move = None;
+        rayon::scope(|s| {
+            for h in helpers.iter_mut() {
+                let p = *pos;
+                let hlimits = SearchLimits { depth: limits.depth, movetime_ms: limits.movetime_ms };
+                s.spawn(move |_| { h.iterative_deepening(&p, &hlimits, |_| {}); });
+            }
+            best_move = self.iterative_deepening(pos, limits, on_depth);
+        });
+        best_move
+    }
 }

@@ -461,3 +461,20 @@ pub fn gen_legal(pos: &Position) -> Vec<Move> {
         })
         .collect()
 }
+
+/// Parse a UCI move string (`"e2e4"`, `"e7e8q"`) against the legal moves in
+/// `pos`, matching on from/to/promotion (castling's from/to is the king's
+/// own move, so no separate castle-notation case is needed).
+pub fn parse_uci_move(pos: &Position, s: &str) -> Option<Move> {
+    if s.len() < 4 { return None; }
+    let from = parse_sq(&s[0..2])?;
+    let to = parse_sq(&s[2..4])?;
+    let promo = match s.as_bytes().get(4) {
+        Some(b'q') => PROMO_Q,
+        Some(b'r') => PROMO_R,
+        Some(b'b') => PROMO_B,
+        Some(b'n') => PROMO_N,
+        _ => PROMO_NONE,
+    };
+    gen_legal(pos).into_iter().find(|m| m.from == from && m.to == to && m.promo == promo)
+}

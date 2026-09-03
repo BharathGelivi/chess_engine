@@ -13,6 +13,7 @@
 // iterative-deepening callback if live mid-search depth updates are wanted.
 
 pub mod board;
+pub mod book;
 pub mod eval;
 pub mod movegen;
 pub mod perft;
@@ -21,6 +22,13 @@ pub mod uci;
 
 use uci::Engine;
 use wasm_bindgen::prelude::*;
+
+// Exposes `initThreadPool(concurrency)` in the generated JS glue — the
+// Lazy-SMP search (search.rs) needs this called and awaited once, before
+// any `sendCommand`, so rayon has Web Workers backed by SharedArrayBuffer
+// to schedule onto (see public/engine/worker.js). No-op on native builds.
+#[cfg(target_arch = "wasm32")]
+pub use wasm_bindgen_rayon::init_thread_pool;
 
 #[wasm_bindgen]
 pub struct WasmEngine {

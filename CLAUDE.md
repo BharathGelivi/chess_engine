@@ -35,34 +35,75 @@ through it, and get live Stockfish suggestions at any position. Vite + React
   implemented yet — `eval.rs` is the handcrafted eval described in
   ENGINE_ARCHITECTURE.md §4 and is the final eval for now, not a stub.
 - [engine/](engine/) — the from-scratch chess engine, a separate Rust
-  crate (Phases 0-4 of the implementation plan). `cargo test` from
+  crate (Phases 0-4 of the implementation plan, plus an opening book and
+  Lazy-SMP threading beyond the plan — see below). `cargo test` from
   `engine/` runs the perft correctness suite; `cargo run --release`
   prints perft + search benchmark numbers; `cargo run --release -- uci`
   is a stdin/stdout UCI-lite loop for manual poking. Module layout:
   `board.rs` (bitboards, FEN, Zobrist — copy-make position, no
   make/unmake), `movegen.rs` (magic bitboards generated at process
   startup via trial-and-error search, not hardcoded constants; pseudo-legal
-  gen + brute-force legality via make-move-and-check-test), `perft.rs`,
-  `eval.rs` (material + PST + mobility + king safety), `search.rs`
-  (negamax/alpha-beta, iterative deepening, TT, MVV-LVA/killers/history
-  ordering, quiescence, PVS, null-move, LMR, aspiration windows — every
-  Phase-3/4 technique is a bool in `SearchOptions` for isolated
-  benchmarking), `uci.rs` (UCI-lite handler, same `info`/`bestmove` line
-  shape as Stockfish), `lib.rs` (wasm-bindgen `WasmEngine` export),
-  `main.rs` (native `[[bin]]`, not built to WASM — fast iteration target).
-  Build to WASM with `wasm-pack build --target web --out-dir
-  ../public/engine/pkg` from inside `engine/`.
+  gen + brute-force legality via make-move-and-check-test; also
+  `parse_uci_move`, shared by `uci.rs` and `book.rs`), `book.rs` (opening
+  book — a small hardcoded set of well-known lines, keyed by each
+  position's Zobrist hash rather than move sequence so transpositions still
+  hit; `uci.rs`'s `go` handler checks it before searching and returns the
+  book move instantly, at whatever `evaluate()` reports with no search),
+  `perft.rs`, `eval.rs` (material + PST + mobility + king safety),
+  `search.rs` (negamax/alpha-beta, iterative deepening, TT, MVV-LVA/
+  killers/history ordering, quiescence, PVS, null-move, LMR, aspiration
+  windows — every Phase-3/4 technique is a bool in `SearchOptions` for
+  isolated benchmarking — plus Lazy-SMP: `iterative_deepening_mt` spawns
+  `num_threads - 1` helper `Search` instances via `rayon::scope`, all
+  sharing one transposition table (`Arc<Vec<Mutex<Option<TTEntry>>>>`, one
+  mutex per slot) and one `time_up` flag (`Arc<AtomicBool>`, fresh per `go`
+  call); only the calling thread's result is reported, helpers exist to
+  seed the shared TT with transposition hits. `iterative_deepening`
+  (single-threaded) is kept as-is and still used directly by the
+  Phase3-vs-Phase4 benchmark harness, so those comparisons stay
+  apples-to-apples), `uci.rs` (UCI-lite handler, same `info`/`bestmove`
+  line shape as Stockfish; `handle_go` picks `num_threads =
+  rayon::current_num_threads().min(4)` — capped since shared-TT lock
+  contention makes more threads a net loss well before using a big
+  machine's full core count), `lib.rs` (wasm-bindgen `WasmEngine` export,
+  plus `pub use wasm_bindgen_rayon::init_thread_pool` on wasm32 — exposes
+  `initThreadPool(n)` in the generated JS glue, see `public/engine/
+  worker.js`), `main.rs` (native `[[bin]]`, not built to WASM — fast
+  iteration target; also gets Lazy-SMP for free via the same `Engine`,
+  same 4-thread cap from `handle_go`).
+  `engine/.cargo/config.toml` sets the `wasm32-unknown-unknown`-only
+  rustflags threading needs (atomics/shared-memory/TLS-export linker args
+  — see its comments for what each does); it's scoped to that one target
+  triple, so native `cargo build`/`cargo test` are unaffected and need no
+  special toolchain. Build to WASM with **`./build-wasm.sh`** from inside
+  `engine/` (not a bare `wasm-pack build` — see below).
+- [engine/build-wasm.sh](engine/build-wasm.sh) — wraps the WASM build
+  (nightly + `-Z build-std`, needed because stable's prebuilt std has no
+  atomics) and two post-build fixups wasm-pack redoes from scratch every
+  run, both bitten this project already: (1) deletes the nested
+  `pkg/.gitignore` wasm-pack regenerates (just `*` — silently excludes the
+  whole engine from git, which is what 404'd "Overboard Engine" in prod
+  once already); (2) patches wasm-bindgen-rayon's generated
+  `workerHelpers.js`, which does a bundler-style directory import
+  (`import('../../..')`) to reach `engine.js` — resolves fine under a
+  bundler's package resolution, but this app loads `pkg/` as raw static
+  files with no bundler in the loop, so that import 404s in a real
+  browser; patched to the explicit `../../../engine.js` path. Always use
+  this script, never call `wasm-pack build` directly, or both gotchas come
+  back on the next build.
 - [public/engine/](public/engine/) — WASM engine deployment: `worker.js`
   (hand-written module-Worker glue, loaded as `new Worker('/engine/worker.js',
   { type: 'module' })`; imports the wasm-pack output from `./pkg/` and
-  forwards UCI-lite lines exactly like the Stockfish Worker does) plus
-  `pkg/` (wasm-pack's generated output — `.wasm` + JS glue, produced by
-  the build command above). Unlike a typical build artifact, `pkg/` **is**
-  committed: Vercel's build has no Rust/cargo toolchain, so if it's not in
-  git it's simply absent from the deployment (this bit the project once —
-  it was gitignored, including wasm-pack's own nested `pkg/.gitignore`,
-  and "Overboard Engine" 404'd in prod). Re-run the wasm-pack build and
-  commit the changed files under `pkg/` whenever `engine/` changes.
+  forwards UCI-lite lines exactly like the Stockfish Worker does; also
+  calls and awaits `initThreadPool(...)`, capped at 4, before constructing
+  `WasmEngine` — this is what actually spins up the Lazy-SMP search's
+  helper-thread Web Workers) plus `pkg/` (wasm-pack's generated output —
+  `.wasm` + JS glue, produced by `build-wasm.sh`). Unlike a typical build
+  artifact, `pkg/` **is** committed: Vercel's build has no Rust/cargo
+  toolchain, so if it's not in git it's simply absent from the deployment
+  (this bit the project once — see `build-wasm.sh` above). Re-run
+  `build-wasm.sh` and commit the changed files under `pkg/` whenever
+  `engine/` changes.
 - [vercel.json](vercel.json) — sets `Cache-Control: public, max-age=31536000,
   immutable` on `/stockfish/*` and `/engine/*`. Vercel's default for
   `public/` static files is `max-age=0, must-revalidate`, which forces a
@@ -70,7 +111,16 @@ through it, and get live Stockfish suggestions at any position. Vite + React
   hasn't changed — the immutable header lets the browser skip that entirely
   after the first load. Trade-off: if either binary is ever updated, the
   filename must change too (cache-busting), since browsers holding the old
-  immutable response will never revalidate it.
+  immutable response will never revalidate it. Also sets
+  `Cross-Origin-Opener-Policy: same-origin` +
+  `Cross-Origin-Embedder-Policy: credentialless` on every route — required
+  for `crossOriginIsolated`/`SharedArrayBuffer`, which the Lazy-SMP thread
+  pool needs. `credentialless` (not `require-corp`) deliberately: it
+  cross-origin-isolates the page without requiring every cross-origin
+  resource (the Google Fonts stylesheet in `index.html`) to opt in with
+  CORP/CORS headers of its own — lower risk of silently breaking an
+  unrelated resource load. `vite.config.ts` sets the same two headers on
+  the dev server for local parity.
 
 ## How the app works (src/App.tsx)
 - **Chess state**: `chess.js` `Chess` instance. `game` = the live/imported

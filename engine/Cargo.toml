@@ -18,6 +18,12 @@ js-sys = "0.3"
 # entropy source is needed — default-features=false keeps getrandom out of
 # the dependency tree entirely (avoids WASM entropy-source complications).
 rand = { version = "0.8", default-features = false, features = ["small_rng"] }
+rayon = "1"
+# Lazy-SMP thread pool for the WASM target only (native uses std::thread
+# directly via rayon's normal pool) — wasm32 has no native threads, this
+# crate spins up Web Workers backed by SharedArrayBuffer instead.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen-rayon = "1"
 
 [profile.release]
 opt-level = 3

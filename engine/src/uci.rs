@@ -5,8 +5,9 @@
 // App.tsx's existing regex-based info-line parser needs no changes to
 // handle this engine as a second Worker.
 
-use crate::board::{parse_sq, Move, Position, PROMO_B, PROMO_N, PROMO_Q, PROMO_R};
-use crate::movegen::gen_legal;
+use crate::board::Position;
+use crate::eval::evaluate;
+use crate::movegen::parse_uci_move;
 use crate::perft::perft;
 use crate::search::{DepthInfo, Search, SearchLimits, SearchOptions};
 
@@ -20,20 +21,7 @@ impl Engine {
         Engine { pos: Position::startpos(), search: Search::new(SearchOptions::default()) }
     }
 
-    fn parse_move(pos: &Position, s: &str) -> Option<Move> {
-        let from = parse_sq(&s[0..2])?;
-        let to = parse_sq(&s[2..4])?;
-        let promo = match s.as_bytes().get(4) {
-            Some(b'q') => PROMO_Q,
-            Some(b'r') => PROMO_R,
-            Some(b'b') => PROMO_B,
-            Some(b'n') => PROMO_N,
-            _ => 0,
-        };
-        gen_legal(pos).into_iter().find(|m| m.from == from && m.to == to && m.promo == promo)
-    }
-
-    pub fn handle_line(&mut self, line: &str, emit: &mut dyn FnMut(String)) {
+    pub fn handle_line(&mut self, line: &str, emit: &mut (dyn FnMut(String) + Send)) {
         let line = line.trim();
         let mut it = line.split_whitespace();
         match it.next() {
@@ -85,13 +73,13 @@ impl Engine {
 
     fn apply_moves(&mut self, it: &mut std::str::SplitWhitespace) {
         for mv_str in it {
-            if let Some(mv) = Self::parse_move(&self.pos, mv_str) {
+            if let Some(mv) = parse_uci_move(&self.pos, mv_str) {
                 self.pos = crate::movegen::make_move(&self.pos, &mv);
             }
         }
     }
 
-    fn handle_go(&mut self, it: &mut std::str::SplitWhitespace, emit: &mut dyn FnMut(String)) {
+    fn handle_go(&mut self, it: &mut std::str::SplitWhitespace, emit: &mut (dyn FnMut(String) + Send)) {
         let mut limits = SearchLimits { depth: None, movetime_ms: None };
         while let Some(tok) = it.next() {
             match tok {
@@ -103,8 +91,24 @@ impl Engine {
         if limits.depth.is_none() && limits.movetime_ms.is_none() {
             limits.depth = Some(6);
         }
+
+        // Known theory: play it instantly rather than spending the search
+        // budget re-deriving moves that are already well-established, and
+        // sidestep the shallow search's occasional preference for a first
+        // move that's fine tactically but poor by known theory.
+        if let Some(mv) = crate::book::book_move(&self.pos) {
+            let score_cp = evaluate(&self.pos);
+            emit(format!("info depth 0 score cp {score_cp} nodes 0 nps 0 time 0 pv {}", mv.to_uci()));
+            emit(format!("bestmove {}", mv.to_uci()));
+            return;
+        }
+
         let pos = self.pos;
-        let best = self.search.iterative_deepening(&pos, &limits, |info: &DepthInfo| {
+        // Lazy-SMP: capped at 4 threads — a shared-TT search sees diminishing
+        // (and eventually negative, from lock contention) returns well
+        // before using every core on a big machine.
+        let num_threads = rayon::current_num_threads().min(4);
+        let best = self.search.iterative_deepening_mt(&pos, &limits, num_threads, |info: &DepthInfo| {
             emit(format_info(info));
         });
         match best {
