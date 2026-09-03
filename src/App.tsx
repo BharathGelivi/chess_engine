@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Activity, ChevronLeft, ChevronRight, Download, Gauge, Play, RotateCcw, Square, Upload, Zap } from 'lucide-react'
+import { Activity, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Download, Gauge, Play, RotateCcw, Square, Upload, Zap } from 'lucide-react'
 import { Chess, Move } from 'chess.js'
 import './App.css'
 
@@ -9,6 +9,13 @@ const pieceGlyphs: Record<string, string> = {
   bK: '♚', bQ: '♛', bR: '♜', bB: '♝', bN: '♞', bP: '♟',
 }
 const files = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h']
+const PIECE_VALUES: Record<string, number> = { p: 1, n: 3, b: 3, r: 5, q: 9, k: 0 }
+// Positive = White up material, negative = Black up.
+function materialDiff(g: Chess): number {
+  let diff = 0
+  for (const row of g.board()) for (const sq of row) if (sq) diff += (sq.color === 'w' ? 1 : -1) * PIECE_VALUES[sq.type]
+  return diff
+}
 const demoPgn = `[Event "Rapid review"]\n[White "You"]\n[Black "Training partner"]\n[Result "*"]\n\n1. e4 e5 2. Nf3 Nc6 3. Bb5 a6 4. Ba4 Nf6 *`
 
 // Two engines can back the "live analysis" Worker: the bundled Stockfish 18
@@ -112,6 +119,7 @@ function App() {
     return replay
   }, [history, viewIndex])
   currentFenRef.current = viewGame.fen()
+  const material = useMemo(() => materialDiff(viewGame), [viewGame])
 
   const suggestions = engineState.lines
 
@@ -282,7 +290,7 @@ function App() {
       <header className="topbar"><svg className="brand-mark" width="34" height="34" viewBox="0 0 34 34"><defs><linearGradient id="logoGrad" x1="0" y1="0" x2="34" y2="34"><stop offset="0%" stopColor="var(--accent-pink)" /><stop offset="100%" stopColor="var(--accent-orange)" /></linearGradient></defs><rect x="1" y="1" width="32" height="32" rx="9" fill="none" stroke="url(#logoGrad)" strokeWidth="2" /><path d="M11 23 L17 10 L23 23" fill="none" stroke="url(#logoGrad)" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" /><circle cx="17" cy="23" r="1.8" fill="var(--accent-orange)" /></svg><div><strong>OVERBOARD</strong><span>Personal chess intelligence</span></div><div className="top-actions"><button className="ghost" onClick={reset}><RotateCcw size={16} /> New game</button><button className="primary" onClick={() => fileRef.current?.click()}><Upload size={16} /> Import PGN</button><input ref={fileRef} hidden type="file" accept=".pgn,.txt" onChange={(event) => { const file = event.target.files?.[0]; if (file) file.text().then(loadPgn) }} /></div></header>
       <div className="mode-tabs"><button className={mode === 'analysis' ? 'active-move' : ''} onClick={() => setMode('analysis')}><Gauge size={14} /> Analysis</button><button className={mode === 'autoplay' ? 'active-move' : ''} onClick={() => setMode('autoplay')}><Play size={14} /> Engine vs Engine</button></div>
       <div className="workspace">
-        <section className="board-column"><div className="eyebrow"><span className="live-dot" /> {mode === 'autoplay' ? 'AUTOPLAY' : 'LIVE ANALYSIS'} <span className="muted">{status}</span></div><div className="board-frame"><div className="board">{board.map((square, index) => { const piece = viewGame.get(square as any); return <button key={square} className={`square ${(Math.floor(index / 8) + index) % 2 ? 'dark' : 'light'}`} data-square={square} data-selected="false" onClick={() => handleSquareClick(square)} aria-label={square}>{piece && <span className={`piece ${piece.color === 'w' ? 'white-piece' : 'black-piece'}`}>{pieceGlyphs[`${piece.color}${piece.type.toUpperCase()}`]}</span>}{index % 8 === 0 && <small>{square[1]}</small>}{index >= 56 && <i>{square[0]}</i>}</button> })}</div></div><div className="board-footer"><button title="Previous move" onClick={() => setViewIndex(Math.max(0, viewIndex - 1))}><ChevronLeft size={20} /></button><span>{viewIndex ? `${Math.ceil(viewIndex / 2)}${viewIndex % 2 ? '...' : '.'}` : 'Start'} <b>{viewGame.turn() === 'w' ? 'White to move' : 'Black to move'}</b></span><button title="Next move" onClick={() => setViewIndex(Math.min(history.length, viewIndex + 1))}><ChevronRight size={20} /></button></div></section>
+        <section className="board-column"><div className="eyebrow"><span className="live-dot" /> {mode === 'autoplay' ? 'AUTOPLAY' : 'LIVE ANALYSIS'} <span className="muted">{status}</span></div><div className="board-frame"><div className="board">{board.map((square, index) => { const piece = viewGame.get(square as any); return <button key={square} className={`square ${(Math.floor(index / 8) + index) % 2 ? 'dark' : 'light'}`} data-square={square} data-selected="false" onClick={() => handleSquareClick(square)} aria-label={square}>{piece && <span className={`piece ${piece.color === 'w' ? 'white-piece' : 'black-piece'}`}>{pieceGlyphs[`${piece.color}${piece.type.toUpperCase()}`]}</span>}{index % 8 === 0 && <small>{square[1]}</small>}{index >= 56 && <i>{square[0]}</i>}</button> })}</div></div><div className="board-footer"><div className="nav-buttons"><button title="First move" disabled={viewIndex === 0} onClick={() => setViewIndex(0)}><ChevronsLeft size={20} /></button><button title="Previous move" disabled={viewIndex === 0} onClick={() => setViewIndex(Math.max(0, viewIndex - 1))}><ChevronLeft size={20} /></button></div><span>{viewIndex ? `${Math.ceil(viewIndex / 2)}${viewIndex % 2 ? '...' : '.'}` : 'Start'} <b>{viewGame.turn() === 'w' ? 'White to move' : 'Black to move'}</b>{material !== 0 && <span className={`material-badge ${material > 0 ? 'white-up' : 'black-up'}`}>{material > 0 ? `White +${material}` : `Black +${-material}`}</span>}</span><div className="nav-buttons"><button title="Next move" disabled={viewIndex === history.length} onClick={() => setViewIndex(Math.min(history.length, viewIndex + 1))}><ChevronRight size={20} /></button><button title="Last move" disabled={viewIndex === history.length} onClick={() => setViewIndex(history.length)}><ChevronsRight size={20} /></button></div></div></section>
         <aside className="analysis-panel">
           {mode === 'analysis' ? (
             <>
