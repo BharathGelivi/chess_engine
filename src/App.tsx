@@ -77,6 +77,46 @@ function requestBestMove(worker: Worker, fen: string, movetimeMs: number): Promi
   })
 }
 
+/** Like requestBestMove, but also tracks the primary line's (multipv 1) last-seen eval. */
+function requestEval(worker: Worker, fen: string, movetimeMs: number): Promise<{ move: string | null; cp: number | null; mate: number | null }> {
+  return new Promise((resolve) => {
+    let cp: number | null = null
+    let mate: number | null = null
+    const onMessage = (event: MessageEvent) => {
+      const line = typeof event.data === 'string' ? event.data : ''
+      const info = /\bmultipv 1\b/.test(line) ? line.match(/\bscore (cp|mate) (-?\d+)/) : null
+      if (info) { if (info[1] === 'mate') { mate = Number(info[2]); cp = null } else { cp = Number(info[2]); mate = null } }
+      const match = line.match(/^bestmove (\S+)/)
+      if (match) {
+        worker.removeEventListener('message', onMessage)
+        resolve({ move: match[1] === '0000' ? null : match[1], cp, mate })
+      }
+    }
+    worker.addEventListener('message', onMessage)
+    worker.postMessage(`position fen ${fen}`)
+    worker.postMessage(`go movetime ${movetimeMs}`)
+  })
+}
+
+// Mate scores dwarf any centipawn score and get compared against real cp
+// values below (best-vs-actual eval), so give them an artificial but
+// consistently-ordered centipawn-scale magnitude instead of comparing
+// "mate in N" against a plain number.
+function mateAsCp(mateIn: number): number {
+  return mateIn > 0 ? 100000 - mateIn * 100 : -100000 - mateIn * 100
+}
+
+// Move-quality tiers by centipawn loss vs. the best available move, from
+// the perspective of whoever played it — chess.com-style but scoped down
+// to a plain cp-loss ladder (no sacrifice/brilliancy detection).
+function classifyMove(cpLoss: number, wasTopChoice: boolean): string {
+  if (wasTopChoice || cpLoss <= 20) return 'Best'
+  if (cpLoss <= 50) return 'Good'
+  if (cpLoss <= 100) return 'Inaccuracy'
+  if (cpLoss <= 200) return 'Mistake'
+  return 'Blunder'
+}
+
 function gameResultLabel(game: Chess, white: EngineKind, black: EngineKind, cappedOut: boolean, stopped: boolean): string {
   if (game.isCheckmate()) {
     const winner = game.turn() === 'w' ? 'Black' : 'White'
@@ -107,6 +147,12 @@ function App() {
   const [mode, setMode] = useState<'analysis' | 'autoplay'>('analysis')
   const [engineChoice, setEngineChoice] = useState<EngineKind>('stockfish')
   const [autoplay, setAutoplay] = useState({ running: false, loading: false, white: 'stockfish' as EngineKind, black: 'ours' as EngineKind, result: '', plies: 0 })
+  // Per-move quality labels for the currently loaded game (index = ply,
+  // matching `history`). Computed on demand by reviewGame() below, not
+  // automatically — a full game review is a real chunk of engine time
+  // (one search per ply), not something to re-run on every render.
+  const [showQuality, setShowQuality] = useState(false)
+  const [review, setReview] = useState({ running: false, done: 0, total: 0, labels: {} as Record<number, { tag: string; cpLoss: number }> })
   const fileRef = useRef<HTMLInputElement>(null)
   const engineRef = useRef<Worker | null>(null)
   const currentFenRef = useRef('')
@@ -128,7 +174,7 @@ function App() {
     const engine = makeEngineWorker(engineChoice)
     engineRef.current = engine
     engine.postMessage('uci')
-    if (engineChoice === 'stockfish') engine.postMessage('setoption name MultiPV value 3')
+    engine.postMessage('setoption name MultiPV value 5')
     engine.postMessage('isready')
     engine.onmessage = (event) => {
       const line = typeof event.data === 'string' ? event.data : ''
@@ -157,7 +203,7 @@ function App() {
           // move above a better one just because its info line landed first.
           const lines = [...current.lines.filter((item) => item.multipv !== multipv), { move: `${moves[0].slice(0, 2)}-${moves[0].slice(2, 4)}`, san: first?.san ?? moves[0], score: centipawns, label: '', multipv }]
             .sort((a, b) => a.multipv - b.multipv)
-            .slice(0, 3)
+            .slice(0, 5)
             .map((item, index) => ({ ...item, label: index === 0 ? 'Best move' : 'Alternative' }))
           return { ...current, depth: Number(depth), time: Number(time ?? current.time), evaluation: centipawns, lines }
         })
@@ -244,8 +290,43 @@ function App() {
       setViewIndex(moves.length)
       setStatus(`Imported ${moves.length} half-moves`)
       setPgnText(text)
+      setReview({ running: false, done: 0, total: 0, labels: {} })
     } catch {
       setStatus('Could not read that PGN. Check the export format.')
+    }
+  }
+
+  /** Steps through the whole game once, engine-evaluating every position,
+   * and labels each played move Best/Good/Inaccuracy/Mistake/Blunder by how
+   * much eval it gave up vs. the best available move (see classifyMove).
+   * One search per ply (not two) — the "after this move" eval for ply i is
+   * the same position as the "before this move" eval for ply i+1, just
+   * from the other side's perspective, so each position is only evaluated
+   * once and reused. */
+  async function reviewGame() {
+    if (!history.length || review.running) return
+    setReview({ running: true, done: 0, total: history.length, labels: {} })
+    const worker = await spawnReadyEngine(engineChoice)
+    const REVIEW_MOVETIME_MS = 600
+    const replay = new Chess()
+    const labels: Record<number, { tag: string; cpLoss: number }> = {}
+    try {
+      let prevEval = await requestEval(worker, replay.fen(), REVIEW_MOVETIME_MS)
+      for (let i = 0; i < history.length; i++) {
+        const played = `${history[i].from}${history[i].to}${history[i].promotion ?? ''}`
+        replay.move(history[i])
+        const afterEval = await requestEval(worker, replay.fen(), REVIEW_MOVETIME_MS)
+        const bestForMover = prevEval.mate != null ? mateAsCp(prevEval.mate) : (prevEval.cp ?? 0)
+        const afterForOpponent = afterEval.mate != null ? mateAsCp(afterEval.mate) : (afterEval.cp ?? 0)
+        const cpLoss = Math.max(0, bestForMover - -afterForOpponent)
+        labels[i] = { tag: classifyMove(cpLoss, prevEval.move === played), cpLoss }
+        setReview((r) => ({ ...r, done: i + 1, labels: { ...labels } }))
+        prevEval = afterEval
+      }
+    } finally {
+      worker.postMessage('quit')
+      worker.terminate()
+      setReview((r) => ({ ...r, running: false }))
     }
   }
 
@@ -261,6 +342,7 @@ function App() {
       setHistory(branchHistory)
       setViewIndex(branchHistory.length)
       setStatus(branched ? `What-if line from move ${viewIndex}: ${next.isCheck() ? 'Check' : 'exploring alternate line'}` : next.isCheck() ? 'Check' : 'Position updated')
+      if (branched) setReview({ running: false, done: 0, total: 0, labels: {} })
     } catch { /* Illegal square selections are simply ignored. */ }
   }
 
@@ -281,6 +363,7 @@ function App() {
 
   function reset() {
     setGame(new Chess()); setHistory([]); setViewIndex(0); setStatus('Ready for a game'); setPgnText('')
+    setReview({ running: false, done: 0, total: 0, labels: {} })
   }
 
   const board = Array.from({ length: 8 }, (_, row) => files.map((file) => `${file}${8 - row}`)).flat()
@@ -298,10 +381,11 @@ function App() {
               <div className="meter"><span /></div>
               <div className="engine-picker"><span className="label">ENGINE</span><div className="engine-picker-buttons"><button className={engineChoice === 'stockfish' ? 'active-move' : ''} onClick={() => setEngineChoice('stockfish')}>Stockfish 18</button><button className={engineChoice === 'ours' ? 'active-move' : ''} onClick={() => setEngineChoice('ours')}>Overboard Engine</button></div></div>
               <div className="engine-status"><Zap size={15} /> {engineNames[engineChoice]} · depth {engineState.depth || '...'} <span>{(engineState.time / 1000).toFixed(1)}s</span></div>
-              <div className="section-title"><span>TOP LINES</span><span className="tiny-badge">{engineChoice === 'stockfish' ? '3 suggestions' : '1 suggestion'}</span></div>
+              <div className="section-title"><span>TOP LINES</span><span className="tiny-badge">{suggestions.length || 5} suggestion{suggestions.length === 1 ? '' : 's'}</span></div>
               <div className="lines">{suggestions.length ? suggestions.map((item) => <button className="line" key={item.move} onClick={() => makeMove(item.move.slice(0, 2), item.move.slice(3))}><span className="line-rank">{item.label}</span><strong>{item.san}</strong><span>{item.score}</span></button>) : <p className="empty">{engineReady ? `${engineNames[engineChoice]} is calculating...` : `Downloading ${engineNames[engineChoice]}... this can take a minute on first load.`}</p>}</div>
               <div className="section-title"><span>GAME MOVES</span><span className="muted">{history.length} ply</span></div>
-              <div className="move-list">{history.length ? history.map((move, index) => <button key={`${move.san}-${index}`} className={index === viewIndex - 1 ? 'active-move' : ''} onClick={() => setViewIndex(index + 1)}><small>{index % 2 === 0 ? `${Math.floor(index / 2) + 1}.` : ''}</small>{move.san}</button>) : <p className="empty">Import a Chess.com PGN to review your game.</p>}</div>
+              <div className="quality-controls"><label><input type="checkbox" checked={showQuality} onChange={(e) => { const on = e.target.checked; setShowQuality(on); if (on && !review.running && !Object.keys(review.labels).length) reviewGame() }} /> Show move quality</label>{showQuality && <button className="ghost" disabled={review.running || !history.length} onClick={reviewGame}>{review.running ? `Reviewing ${review.done}/${review.total}...` : 'Re-review'}</button>}</div>
+              <div className="move-list">{history.length ? history.map((move, index) => <button key={`${move.san}-${index}`} className={index === viewIndex - 1 ? 'active-move' : ''} onClick={() => setViewIndex(index + 1)}>{showQuality && review.labels[index] && <i className={`quality-dot q-${review.labels[index].tag.toLowerCase()}`} title={`${review.labels[index].tag} (-${(review.labels[index].cpLoss / 100).toFixed(2)})`} />}<small>{index % 2 === 0 ? `${Math.floor(index / 2) + 1}.` : ''}</small>{move.san}</button>) : <p className="empty">Import a Chess.com PGN to review your game.</p>}</div>
               <div className="panel-footer"><button className="ghost" onClick={() => loadPgn(demoPgn)}><Download size={15} /> Load sample game</button><span><Gauge size={15} /> Full WASM engine</span></div>
             </>
           ) : (

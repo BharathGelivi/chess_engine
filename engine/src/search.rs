@@ -82,6 +82,10 @@ pub struct Search {
     start_ms: f64,
     opts: SearchOptions,
     pub last_pv: Vec<Move>,
+    // Root moves to skip — how MultiPV is implemented: search once per
+    // requested line, excluding whatever previous lines already reported.
+    // Only ever checked at the root (ply 0); empty in normal single-PV use.
+    root_exclude: Vec<Move>,
 }
 
 pub struct SearchLimits {
@@ -113,6 +117,7 @@ impl Search {
             start_ms: 0.0,
             opts,
             last_pv: Vec::new(),
+            root_exclude: Vec::new(),
         }
     }
 
@@ -132,10 +137,15 @@ impl Search {
             start_ms: self.start_ms,
             opts: self.opts,
             last_pv: Vec::new(),
+            root_exclude: self.root_exclude.clone(),
         }
     }
 
     pub fn set_options(&mut self, opts: SearchOptions) { self.opts = opts; }
+
+    /// Sets the root moves to skip for the next `iterative_deepening*` call
+    /// (MultiPV support — see `root_exclude`'s doc comment).
+    pub fn set_root_exclude(&mut self, exclude: Vec<Move>) { self.root_exclude = exclude; }
 
     fn tt_probe(&self, hash: u64) -> Option<TTEntry> {
         if !self.opts.use_tt { return None; }
@@ -249,8 +259,16 @@ impl Search {
         let orig_alpha = alpha;
         let tt_hit = self.tt_probe(pos.hash);
         let tt_move = tt_hit.and_then(|e| e.best);
+        // MultiPV: the root position's hash is identical across every
+        // sub-search (same `pos`, only root_exclude differs), so a cached
+        // entry here may be a cutoff/score from a *previous* line's search
+        // — using it would skip the exclusion-filtered move loop below
+        // entirely and hand back an already-reported line. Using tt_move
+        // for ordering is still fine even then: it just won't match any
+        // move in the (already-filtered) root move list if it's excluded.
+        let root_multipv = ply == 0 && !self.root_exclude.is_empty();
         if let Some(e) = tt_hit {
-            if e.depth as i32 >= depth {
+            if e.depth as i32 >= depth && !root_multipv {
                 match e.flag {
                     TT_FLAG_EXACT => return e.score,
                     TT_FLAG_LOWER => alpha = alpha.max(e.score),
@@ -276,6 +294,18 @@ impl Search {
         if moves.is_empty() {
             return if in_chk { -MATE_SCORE + ply as i32 } else { 0 };
         }
+        // MultiPV: at the root only, drop moves already reported as an
+        // earlier line. `iterative_deepening`'s own upfront check keeps
+        // this from ever emptying the list here (it short-circuits before
+        // search starts once 0 or 1 non-excluded root moves remain) — the
+        // fallback score is defensive, not expected to fire.
+        let moves: Vec<Move> = if ply == 0 && !self.root_exclude.is_empty() {
+            let filtered: Vec<Move> = moves.into_iter().filter(|m| !self.root_exclude.contains(m)).collect();
+            if filtered.is_empty() { return -MATE_SCORE; }
+            filtered
+        } else {
+            moves
+        };
         let moves = self.order_moves(pos, moves, tt_move, ply.min(MAX_PLY));
 
         let mut best_score = -MATE_SCORE - 1;
@@ -352,10 +382,29 @@ impl Search {
         self.stop = false;
         self.start_ms = now_ms();
         self.deadline_ms = limits.movetime_ms.map(|ms| self.start_ms + ms as f64);
+
+        // Root moves left after MultiPV exclusion. 0 means every legal move
+        // is already reported (multipv requested more lines than the
+        // position has moves) — nothing to search. 1 means no decision to
+        // make (a forced move, or the last distinct line in a MultiPV
+        // sweep) — answer instantly instead of burning the time budget.
+        let root_moves: Vec<Move> = gen_legal(pos).into_iter().filter(|m| !self.root_exclude.contains(m)).collect();
+        if root_moves.is_empty() {
+            return None;
+        }
+        if root_moves.len() == 1 {
+            let mv = root_moves[0];
+            self.last_pv = vec![mv];
+            on_depth(&DepthInfo { depth: 1, score_cp: evaluate(pos), mate: None, nodes: 0, time_ms: 0, pv: vec![mv] });
+            return Some(mv);
+        }
+
         let max_depth = limits.depth.unwrap_or(64).min(64) as i32;
 
         let mut best_move = None;
         let mut prev_score = 0;
+        let mut prev_best: Option<Move> = None;
+        let mut stable_depths = 0;
         for depth in 1..=max_depth {
             let (mut alpha, mut beta) = (-MATE_SCORE - 1, MATE_SCORE + 1);
             if self.opts.use_aspiration && depth >= 4 {
@@ -397,10 +446,27 @@ impl Search {
                 pv,
             });
             if self.stop { break; }
+
+            // Soft time management: once half the movetime budget is spent
+            // and the last few completed depths kept agreeing on the same
+            // best move, stop deepening early rather than spending the rest
+            // of the budget confirming an answer that isn't going to change
+            // — the freed time isn't banked for later (this app has no
+            // per-move clock pool to borrow from), it just makes analysis
+            // feel snappier on quiet/forced positions. Depth-limited
+            // (non-movetime) searches are unaffected.
+            if let Some(dl) = self.deadline_ms {
+                stable_depths = if best_move == prev_best { stable_depths + 1 } else { 0 };
+                prev_best = best_move;
+                let soft_deadline = self.start_ms + (dl - self.start_ms) * 0.5;
+                if depth >= 6 && stable_depths >= 3 && now_ms() >= soft_deadline {
+                    break;
+                }
+            }
         }
         // Emergency fallback: an aborted depth-1 search (pathologically tiny
         // movetime) can leave best_move unset. Never hand back "no move".
-        best_move.or_else(|| gen_legal(pos).into_iter().next())
+        best_move.or_else(|| gen_legal(pos).into_iter().find(|m| !self.root_exclude.contains(m)))
     }
 
     pub fn stop_now(&mut self) { self.stop = true; }

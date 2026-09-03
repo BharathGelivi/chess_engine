@@ -61,8 +61,32 @@ through it, and get live Stockfish suggestions at any position. Vite + React
   seed the shared TT with transposition hits. `iterative_deepening`
   (single-threaded) is kept as-is and still used directly by the
   Phase3-vs-Phase4 benchmark harness, so those comparisons stay
-  apples-to-apples), `uci.rs` (UCI-lite handler, same `info`/`bestmove`
-  line shape as Stockfish; `handle_go` picks `num_threads =
+  apples-to-apples — it also carries the adaptive time management: an
+  upfront `root_moves.len()` check answers instantly with no search at
+  all when there's 0 (MultiPV exclusion exhausted every legal move — see
+  below) or 1 (a forced move, or the last remaining MultiPV line) root
+  move, and once a movetime budget is given, a soft-stop breaks the
+  depth-iteration loop early once the last 3 completed depths agreed on
+  the same best move *and* at least half the budget is spent — freed time
+  isn't banked for later, there's no per-move clock pool in this app, it
+  just makes analysis feel snappier on quiet/forced positions than
+  grinding out the full fixed budget for an answer that was already
+  settled. MultiPV: `Search::root_exclude` (set via `set_root_exclude`,
+  checked only at ply 0) filters the root move list so a search skips
+  moves already reported as an earlier line — `uci.rs`'s `handle_go` runs
+  one search per requested line, growing the exclude set after each,
+  which is a real N-searches-not-one approximation (see App.tsx's note on
+  this in "How the app works" above) rather than the single-search
+  multi-window MultiPV real engines use. One correctness trap this
+  exclusion hit: the root position's hash is identical across every
+  MultiPV sub-search (same `pos`, only `root_exclude` differs), so
+  `negamax`'s normal TT-hit cutoff at ply 0 was returning a *previous*
+  line's cached result outright, skipping the exclusion-filtered move
+  loop entirely — fixed by disabling that one cutoff specifically at the
+  root while `root_exclude` is non-empty), `uci.rs` (UCI-lite handler,
+  same `info`/`bestmove` line shape as Stockfish, now with a `multipv N`
+  field on every `info` line — set via `setoption name MultiPV value N`
+  (clamped 1-5), default 1; `handle_go` picks `num_threads =
   rayon::current_num_threads().min(4)` — capped since shared-TT lock
   contention makes more threads a net loss well before using a big
   machine's full core count), `lib.rs` (wasm-bindgen `WasmEngine` export,
@@ -163,14 +187,39 @@ through it, and get live Stockfish suggestions at any position. Vite + React
   `engine/`). The Worker-creation `useEffect` now depends on
   `engineChoice` and recreates the Worker on switch; the existing
   `info`-line regex parser is unchanged since both engines emit the same
-  line shape. Our engine only emits one PV line (no MultiPV). Live
-  analysis sends Stockfish a fixed `go depth 18` but our engine a time
-  budget (`go movetime 3000`, `analysisBudget` map in App.tsx) — depth is
-  a bad knob for our slower copy-make search since a fixed depth was
-  either too shallow (weak tactics) or too slow depending on position;
-  movetime lets iterative deepening go as deep as the budget allows, and
-  the `stop` sent on every position change cancels a stale search instead
-  of queuing one up.
+  line shape. Both engines get `setoption name MultiPV value 5` — ours
+  implements MultiPV as N sequential searches, each excluding the root
+  moves earlier lines already returned (`Search::root_exclude` /
+  `Engine::multipv` in the Rust crate — see below), not a single search
+  reporting N PVs at once, so it's approximate: the first searched line
+  gets the full budget, every line after that gets a smaller fixed
+  `ALT_LINE_MOVETIME_MS`. Live analysis sends Stockfish a fixed `go depth
+  18` but our engine a time budget (`go movetime 3000`, `analysisBudget`
+  map in App.tsx) — depth is a bad knob for our slower copy-make search
+  since a fixed depth was either too shallow (weak tactics) or too slow
+  depending on position; movetime lets iterative deepening go as deep as
+  the budget allows (further capped adaptively — see `search.rs` below),
+  and the `stop` sent on every position change cancels a stale search
+  instead of queuing one up.
+- **Move-quality review** (`reviewGame` in App.tsx): a "Show move quality"
+  checkbox in the analysis panel triggers a one-off pass over the whole
+  loaded game — one engine eval per *position* (not per move: the "after
+  move i" eval and "before move i+1" eval are the same position, so
+  `history.length + 1` searches cover a game of `history.length` plies),
+  each at a fixed short `REVIEW_MOVETIME_MS`. Classifies each played move
+  by centipawn loss vs. the best available move at that point
+  (`classifyMove`) into Best/Good/Inaccuracy/Mistake/Blunder — a plain
+  cp-loss ladder, deliberately not chess.com's fuller taxonomy (no
+  Brilliant/Great/sacrifice detection). Renders as a small colored dot per
+  move in the move list (`.quality-dot`, `q-*` classes in App.css).
+  Re-runs are manual (button, or first-check of the checkbox) — not
+  re-triggered automatically on every render, since a full review is a
+  real chunk of engine time. Invalidated (cleared) on new PGN import,
+  "New game", and branching a move (`makeMove`'s `branched` case) — a
+  stale label set from a different line would be actively misleading.
+  Reuses whichever engine is selected in `engineChoice`, so labels are
+  only as trustworthy as that engine's own strength (Overboard Engine
+  reviewing its own games is a weaker judge than Stockfish would be).
 - **Engine vs engine autoplay**: `mode` state (`'analysis' | 'autoplay'`)
   toggles between the existing single-engine analysis panel and a second
   panel. Autoplay spawns two independent engine Workers (`spawnReadyEngine`,
