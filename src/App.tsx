@@ -91,7 +91,7 @@ function App() {
   const [viewIndex, setViewIndex] = useState(0)
   const [pgnText, setPgnText] = useState('')
   const [status, setStatus] = useState('Ready for a game')
-  const [engineState, setEngineState] = useState({ depth: 0, time: 0, evaluation: '0.00', lines: [] as Array<{ move: string; san: string; score: string; label: string }> })
+  const [engineState, setEngineState] = useState({ depth: 0, time: 0, evaluation: '0.00', lines: [] as Array<{ move: string; san: string; score: string; label: string; multipv: number }> })
   // Stockfish's WASM binary is ~110MB — a cold load can take a minute or
   // more before the worker responds at all, during which the UI would
   // otherwise look identically "calculating" whether it's thinking or just
@@ -129,6 +129,7 @@ function App() {
       const time = line.match(/\btime (\d+)/)?.[1]
       const score = line.match(/score (cp|mate) (-?\d+)/)
       const pv = line.match(/\bpv (.+)$/)?.[1]
+      const multipv = Number(line.match(/\bmultipv (\d+)/)?.[1] ?? 1)
       if (depth && score && pv) {
         const moves = pv.split(' ')
         // The engine's info line is async and can arrive after the live
@@ -141,7 +142,17 @@ function App() {
           first = new Chess(currentFenRef.current).move({ from: moves[0].slice(0, 2), to: moves[0].slice(2, 4), promotion: moves[0][4] as any })
         } catch { /* stale PV for a position we've since moved past */ }
         const centipawns = score[1] === 'mate' ? `M${score[2]}` : `${Number(score[2]) >= 0 ? '+' : ''}${(Number(score[2]) / 100).toFixed(2)}`
-        setEngineState((current) => ({ ...current, depth: Number(depth), time: Number(time ?? current.time), evaluation: centipawns, lines: [...current.lines.filter((item) => item.move !== `${moves[0].slice(0, 2)}-${moves[0].slice(2, 4)}`), { move: `${moves[0].slice(0, 2)}-${moves[0].slice(2, 4)}`, san: first?.san ?? moves[0], score: centipawns, label: current.lines.length ? 'Alternative' : 'Best move' }].slice(0, 3) }))
+        setEngineState((current) => {
+          // MultiPV lines arrive independently per PV slot and out of order across
+          // depths — `multipv N` is the engine's own rank (1 = best), so key/sort
+          // by that instead of arrival order, or the panel can show a worse-looking
+          // move above a better one just because its info line landed first.
+          const lines = [...current.lines.filter((item) => item.multipv !== multipv), { move: `${moves[0].slice(0, 2)}-${moves[0].slice(2, 4)}`, san: first?.san ?? moves[0], score: centipawns, label: '', multipv }]
+            .sort((a, b) => a.multipv - b.multipv)
+            .slice(0, 3)
+            .map((item, index) => ({ ...item, label: index === 0 ? 'Best move' : 'Alternative' }))
+          return { ...current, depth: Number(depth), time: Number(time ?? current.time), evaluation: centipawns, lines }
+        })
       }
     }
     return () => { engine.postMessage('quit'); engine.terminate(); engineRef.current = null }
