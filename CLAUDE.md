@@ -181,10 +181,14 @@ through it, and get live Stockfish suggestions at any position. Vite + React
   (`document.querySelector('[data-selected="true"]')`), not React state —
   intentional for this single-file scope, not an oversight.
 - **Engine picker (analysis mode)**: `engineChoice` state (`'stockfish' |
-  'ours'`) selects which Worker script the single analysis Worker loads —
-  `/stockfish/stockfish-18-single.js` (classic Worker) or
-  `/engine/worker.js` (module Worker, wraps the WASM engine in
-  `engine/`). The Worker-creation `useEffect` now depends on
+  'ours'`, **defaults to `'ours'`**) selects which Worker script the single
+  analysis Worker loads — `/stockfish/stockfish-18-single.js` (classic
+  Worker, ~108MB WASM) or `/engine/worker.js` (module Worker, wraps the
+  WASM engine in `engine/`, ~170KB). Defaulting to Stockfish used to mean
+  every first visit ate a ~108MB eager download before showing any
+  analysis; defaulting to ours (600x smaller, and by now has the opening
+  book/MultiPV/Lazy-SMP/time-management from this session) fixes that —
+  Stockfish only downloads if a user explicitly clicks it. The Worker-creation `useEffect` now depends on
   `engineChoice` and recreates the Worker on switch; the existing
   `info`-line regex parser is unchanged since both engines emit the same
   line shape. Both engines get `setoption name MultiPV value 5` — ours

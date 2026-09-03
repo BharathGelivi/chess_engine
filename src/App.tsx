@@ -145,7 +145,12 @@ function App() {
   // still downloading. Tracked separately so we can tell the user which.
   const [engineReady, setEngineReady] = useState(false)
   const [mode, setMode] = useState<'analysis' | 'autoplay'>('analysis')
-  const [engineChoice, setEngineChoice] = useState<EngineKind>('stockfish')
+  // Defaults to our own engine, not Stockfish — Stockfish's WASM binary is
+  // ~108MB vs. ours at ~170KB, so defaulting to Stockfish meant every first
+  // visit ate a huge eager download before showing any analysis at all.
+  // Stockfish is still one click away in the picker below; it just isn't
+  // fetched until asked for.
+  const [engineChoice, setEngineChoice] = useState<EngineKind>('ours')
   const [autoplay, setAutoplay] = useState({ running: false, loading: false, white: 'stockfish' as EngineKind, black: 'ours' as EngineKind, result: '', plies: 0 })
   // Per-move quality labels for the currently loaded game (index = ply,
   // matching `history`). Computed on demand by reviewGame() below, not
