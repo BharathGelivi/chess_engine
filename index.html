@@ -3,13 +3,52 @@
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="apple-touch-icon" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#0f0f1a" />
+    <title>Overboard — Free Chess Engine & Analysis Board</title>
+    <meta name="description" content="Overboard is a free chess engine and analysis board. Import a PGN, get live move suggestions from Stockfish 18 or our own from-scratch engine, and watch two engines battle in self chess play — all free, right in your browser." />
+    <meta name="keywords" content="free chess engine, chess engine, chess analysis board, self chess play, engine vs engine chess, play against chess engine, Stockfish online" />
+    <link rel="canonical" href="https://chess-engine-pearl.vercel.app/" />
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content="Overboard — Free Chess Engine & Analysis Board" />
+    <meta property="og:description" content="A free chess engine and analysis board: live move suggestions, PGN import, and engine-vs-engine self chess play — powered by Stockfish 18 and a from-scratch engine." />
+    <meta property="og:url" content="https://chess-engine-pearl.vercel.app/" />
+    <meta name="twitter:card" content="summary" />
+    <meta name="twitter:title" content="Overboard — Free Chess Engine & Analysis Board" />
+    <meta name="twitter:description" content="A free chess engine and analysis board: live move suggestions, PGN import, and engine-vs-engine self chess play." />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
-    <title>Overboard</title>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <!--
+        Static fallback content for crawlers/clients that don't execute JS.
+        React's createRoot().render() replaces this entirely once the app
+        boots, so real visitors never see it — see src/main.tsx.
+      -->
+      <h1>Overboard: Free Chess Engine &amp; Analysis Board</h1>
+      <p>
+        Overboard is a free chess engine and analysis board that runs
+        entirely in your browser. Import a game as a PGN and step through
+        it move by move, or play live, while getting move suggestions from
+        <strong>Stockfish 18</strong> or <strong>Overboard Engine</strong>,
+        a from-scratch chess engine built for this project.
+      </p>
+      <h2>Free chess engine analysis</h2>
+      <p>
+        Get up to five suggested moves per position, an evaluation bar, and
+        a material-balance readout as you browse any position in your game.
+      </p>
+      <h2>Self chess play — engine vs engine</h2>
+      <p>
+        Watch two chess engines play each other automatically in self chess
+        play mode, in any combination of Stockfish 18 and Overboard Engine.
+      </p>
+      <p>
+        <a href="https://github.com/BharathGelivi/chess_engine">Source code on GitHub</a>
+      </p>
+    </div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
